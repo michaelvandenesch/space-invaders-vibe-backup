@@ -92,8 +92,8 @@
 
     <script type="module">
         import {
-            PLAYER_SPRITE, BULLET_SPRITE,
-            TUX_SPRITE, WINDOWS_SPRITE, CREEPER_SPRITE,
+            PLAYER_SPRITE, BULLET_SPRITE, ALIEN_BULLET_SPRITE,
+            TUX_SPRITE, WINDOWS_SPRITE, CREEPER_SPRITE, BUNKER_SPRITE,
             drawSprite, spriteWidth, spriteHeight
         } from './js/sprites.js';
 
@@ -261,6 +261,7 @@
             player.y = canvas.height - playerH() - 30;
             player.x = Math.max(0, Math.min(player.x, canvas.width - playerW()));
             buildAliens();
+            buildBunkers();
         });
 
         // ----- Tastatur-Steuerung (state-basiert für Multi-Key) -----
@@ -285,6 +286,14 @@
         function bulletScale()  { return 3; }
         function bulletW()      { return spriteWidth(BULLET_SPRITE)  * bulletScale(); }
         function bulletH()      { return spriteHeight(BULLET_SPRITE) * bulletScale(); }
+
+        // Alien-Geschosse
+        const alienBullets = [];
+        let lastAlienShot = 0;
+        let nextAlienShotDelay = 1500; // 1-2s
+        function alienBulletScale() { return 3; }
+        function alienBulletW() { return spriteWidth(ALIEN_BULLET_SPRITE)  * alienBulletScale(); }
+        function alienBulletH() { return spriteHeight(ALIEN_BULLET_SPRITE) * alienBulletScale(); }
 
         function tryShoot() {
             const now = Date.now();
@@ -328,9 +337,12 @@
             wave = 1;
             speedMultiplier = 1;
             bullets.length = 0;
+            alienBullets.length = 0;
             buildAliens();
+            buildBunkers();
             placePlayerInitial();
             lastAlienTick = performance.now();
+            lastAlienShot = performance.now();
             gameState = STATE.PLAYING;
             updateHud();
         }
@@ -339,8 +351,11 @@
             wave += 1;
             speedMultiplier *= 1.5;
             buildAliens();
+            buildBunkers();
             bullets.length = 0;
+            alienBullets.length = 0;
             lastAlienTick = performance.now();
+            lastAlienShot = performance.now();
             updateHud();
         }
 
@@ -461,6 +476,102 @@
             }
         }
 
+        // ----- Bunker (zerstörbar, pixelweise) -----
+        const BUNKER_COUNT = 4;
+        const bunkers = []; // { x, y, scale, pixels: 2D-Array Kopie }
+
+        function getBunkerScale() {
+            return canvas.width >= 600 ? 3 : 1.5;
+        }
+        function bunkerW(b) { return spriteWidth(BUNKER_SPRITE)  * b.scale; }
+        function bunkerH(b) { return spriteHeight(BUNKER_SPRITE) * b.scale; }
+
+        function buildBunkers() {
+            bunkers.length = 0;
+            const scale = getBunkerScale();
+            const w = spriteWidth(BUNKER_SPRITE)  * scale;
+            const h = spriteHeight(BUNKER_SPRITE) * scale;
+            const yFrac = canvas.width >= 600 ? 0.75 : 0.60;
+            const y = canvas.height * yFrac;
+            // gleichmäßig verteilen: 4 Bunker, 5 Lücken (Rand+Zwischenraum)
+            const totalSpace = canvas.width - BUNKER_COUNT * w;
+            const gap = totalSpace / (BUNKER_COUNT + 1);
+            for (let i = 0; i < BUNKER_COUNT; i++) {
+                const x = gap + i * (w + gap);
+                // Pixel-Matrix als String-Array kopieren (zerstörbar)
+                const pixels = BUNKER_SPRITE.map(row => row.split(''));
+                bunkers.push({ x, y, scale, pixels });
+            }
+        }
+        buildBunkers();
+
+        function drawBunkers() {
+            for (const b of bunkers) {
+                for (let row = 0; row < b.pixels.length; row++) {
+                    for (let col = 0; col < b.pixels[row].length; col++) {
+                        if (b.pixels[row][col] === '.') continue;
+                        ctx.fillStyle = '#ffffff';
+                        ctx.fillRect(
+                            b.x + col * b.scale,
+                            b.y + row * b.scale,
+                            b.scale, b.scale
+                        );
+                    }
+                }
+            }
+        }
+
+        // Prüft pixel-genaue Kollision eines Bullet-Rechtecks mit Bunker-Pixeln,
+        // entfernt die getroffenen Pixel (und ein paar drumherum für Crater-Effekt).
+        // Liefert true bei Treffer.
+        function bulletHitsBunker(bx, by, bw, bh) {
+            for (const b of bunkers) {
+                if (bx + bw <= b.x || bx >= b.x + bunkerW(b)) continue;
+                if (by + bh <= b.y || by >= b.y + bunkerH(b)) continue;
+                // Bunker-lokale Pixel-Range
+                const c0 = Math.max(0, Math.floor((bx - b.x) / b.scale));
+                const c1 = Math.min(b.pixels[0].length - 1, Math.floor((bx + bw - 1 - b.x) / b.scale));
+                const r0 = Math.max(0, Math.floor((by - b.y) / b.scale));
+                const r1 = Math.min(b.pixels.length - 1, Math.floor((by + bh - 1 - b.y) / b.scale));
+                let hit = false;
+                for (let r = r0; r <= r1 && !hit; r++) {
+                    for (let c = c0; c <= c1 && !hit; c++) {
+                        if (b.pixels[r][c] !== '.') hit = true;
+                    }
+                }
+                if (!hit) continue;
+                // Krater erzeugen: getroffene Range plus 1 Pixel Rand löschen
+                for (let r = Math.max(0, r0 - 1); r <= Math.min(b.pixels.length - 1, r1 + 1); r++) {
+                    for (let c = Math.max(0, c0 - 1); c <= Math.min(b.pixels[0].length - 1, c1 + 1); c++) {
+                        b.pixels[r][c] = '.';
+                    }
+                }
+                return true;
+            }
+            return false;
+        }
+
+        // ----- Alien-Schuss-Logik -----
+        function tryAlienShoot(now) {
+            if (now - lastAlienShot < nextAlienShotDelay) return;
+            // Pro Spalte den lebenden Alien mit dem höchsten row finden (= unterster)
+            const lowestPerCol = new Map();
+            for (const a of aliens) {
+                if (!a.alive) continue;
+                const cur = lowestPerCol.get(a.col);
+                if (!cur || a.row > cur.row) lowestPerCol.set(a.col, a);
+            }
+            const candidates = [...lowestPerCol.values()];
+            if (candidates.length === 0) return;
+            const shooter = candidates[Math.floor(Math.random() * candidates.length)];
+            const r = alienRectAt(shooter);
+            const bx = r.x + r.w / 2 - alienBulletW() / 2;
+            const by = r.y + r.h;
+            alienBullets.push({ x: bx, y: by });
+            lastAlienShot = now;
+            nextAlienShotDelay = 1000 + Math.random() * 1000; // 1-2s
+        }
+
         // ----- Touch-Steuerung: Drag auf dem Canvas -----
         let touchTargetX = null;
 
@@ -567,13 +678,18 @@
                 if (isTouch) keys['Space'] = false;
             }
 
-            // Geschosse bewegen + Kollision mit Aliens
+            // Geschosse bewegen + Kollision mit Aliens / Bunkern
             const bulletSpeed = canvas.height / 1.0;
             for (let i = bullets.length - 1; i >= 0; i--) {
                 const b = bullets[i];
                 b.y -= bulletSpeed * dt;
                 if (b.y + bulletH() < 0) { bullets.splice(i, 1); continue; }
-                // Kollision
+                // Bunker zuerst (auf dem Weg nach oben)
+                if (bulletHitsBunker(b.x, b.y, bulletW(), bulletH())) {
+                    bullets.splice(i, 1);
+                    continue;
+                }
+                // Aliens
                 let hit = false;
                 for (const a of aliens) {
                     if (!a.alive) continue;
@@ -587,6 +703,27 @@
                     }
                 }
                 if (hit) bullets.splice(i, 1);
+            }
+
+            // Alien-Geschosse: spawnen + bewegen + Kollision
+            tryAlienShoot(performance.now());
+            const alienBulletSpeed = canvas.height / 1.5; // Querung in 1.5s
+            for (let i = alienBullets.length - 1; i >= 0; i--) {
+                const b = alienBullets[i];
+                b.y += alienBulletSpeed * dt;
+                if (b.y > canvas.height) { alienBullets.splice(i, 1); continue; }
+                // Bunker
+                if (bulletHitsBunker(b.x, b.y, alienBulletW(), alienBulletH())) {
+                    alienBullets.splice(i, 1);
+                    continue;
+                }
+                // Spieler
+                if (aabb(b.x, b.y, alienBulletW(), alienBulletH(), player.x, player.y, playerW(), playerH())) {
+                    alienBullets.splice(i, 1);
+                    playHit();
+                    gameOver();
+                    return;
+                }
             }
 
             // Alien-Block-Bewegung (zeitgesteuert + Marsch-Sound, mit Wellen-Speed)
@@ -620,9 +757,13 @@
             }
 
             drawAliens();
+            drawBunkers();
             drawSprite(ctx, PLAYER_SPRITE, player.x, player.y, getSpriteScale(), '#ffffff');
             for (const b of bullets) {
                 drawSprite(ctx, BULLET_SPRITE, b.x, b.y, bulletScale(), '#ffffff');
+            }
+            for (const b of alienBullets) {
+                drawSprite(ctx, ALIEN_BULLET_SPRITE, b.x, b.y, alienBulletScale(), '#ffffff');
             }
 
             if (gameState === STATE.GAME_OVER) {
