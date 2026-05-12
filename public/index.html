@@ -223,6 +223,28 @@
             return factor * baseFactor;
         }
 
+        // Eigene Skalierung für Aliens: auf Mobile kleiner (1.5 statt 2),
+        // zusätzlich dynamisch verkleinert, bis Block + 15% Padding pro Seite
+        // ins Canvas passt: 11*sw*scale + 10*spacing <= 0.7 * canvas.width.
+        function getAlienScale() {
+            const alienW = spriteWidth(TUX_SPRITE); // 16
+            const isMobile = canvas.width < 600;
+            let scale = isMobile ? 1.5 : 3;
+            const minScale = 0.5;
+            const target = canvas.width * 0.7;
+            while (scale > minScale) {
+                const spacing = Math.max(isMobile ? 4 : 6, scale * 2);
+                const total = ALIEN_COLS * alienW * scale + (ALIEN_COLS - 1) * spacing;
+                if (total <= target) break;
+                scale -= 0.25;
+            }
+            return Math.max(minScale, scale);
+        }
+        function getAlienSpacing() {
+            const isMobile = canvas.width < 600;
+            return Math.max(isMobile ? 4 : 6, getAlienScale() * 2);
+        }
+
         // ----- Spieler -----
         const player = { x: 0, y: 0 };
 
@@ -352,9 +374,9 @@
         const aliens = []; // {row, col, alive, type}
 
         // Zellen-Größen (aus skaliertem Sprite + Spacing) für aktuelle Canvas-Größe
-        function alienCellW() { return spriteWidth(TUX_SPRITE)  * getSpriteScale() + Math.max(6, getSpriteScale() * 2); }
-        function alienCellH() { return spriteHeight(TUX_SPRITE) * getSpriteScale() + Math.max(4, getSpriteScale() * 2); }
-        function alienStepX() { return Math.max(2, getSpriteScale() * 2); } // horizontaler Schritt
+        function alienCellW() { return spriteWidth(TUX_SPRITE)  * getAlienScale() + getAlienSpacing(); }
+        function alienCellH() { return spriteHeight(TUX_SPRITE) * getAlienScale() + Math.max(4, getAlienScale() * 2); }
+        function alienStepX() { return Math.max(2, getAlienScale() * 2); } // horizontaler Schritt
         function alienStepY() { return canvas.height * 0.045; }              // vertikaler Schritt ~4.5%
 
         function buildAliens() {
@@ -426,8 +448,8 @@
         function drawAliens() {
             const cellW = alienCellW();
             const cellH = alienCellH();
-            const sw = spriteWidth(TUX_SPRITE)  * getSpriteScale();
-            const sh = spriteHeight(TUX_SPRITE) * getSpriteScale();
+            const sw = spriteWidth(TUX_SPRITE)  * getAlienScale();
+            const sh = spriteHeight(TUX_SPRITE) * getAlienScale();
             const padX = (cellW - sw) / 2;
             const padY = (cellH - sh) / 2;
             for (const a of aliens) {
@@ -435,7 +457,7 @@
                 const def = ROW_DEFS[a.type];
                 const x = alienBlock.x + a.col * cellW + padX;
                 const y = alienBlock.y + a.row * cellH + padY;
-                drawSprite(ctx, def.sprite, x, y, getSpriteScale(), def.color);
+                drawSprite(ctx, def.sprite, x, y, getAlienScale(), def.color);
             }
         }
 
@@ -495,8 +517,8 @@
         function alienRectAt(a) {
             const cellW = alienCellW();
             const cellH = alienCellH();
-            const sw = spriteWidth(TUX_SPRITE)  * getSpriteScale();
-            const sh = spriteHeight(TUX_SPRITE) * getSpriteScale();
+            const sw = spriteWidth(TUX_SPRITE)  * getAlienScale();
+            const sh = spriteHeight(TUX_SPRITE) * getAlienScale();
             const padX = (cellW - sw) / 2;
             const padY = (cellH - sh) / 2;
             return {
@@ -574,7 +596,7 @@
             const bb = alienBlockBounds();
             if (bb.maxRow >= 0) {
                 const cellH = alienCellH();
-                const sh = spriteHeight(TUX_SPRITE) * getSpriteScale();
+                const sh = spriteHeight(TUX_SPRITE) * getAlienScale();
                 const padY = (cellH - sh) / 2;
                 const lowestY = alienBlock.y + (bb.maxRow + 1) * cellH - padY;
                 if (lowestY >= player.y) { gameOver(); return; }
