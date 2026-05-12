@@ -53,11 +53,42 @@
     </div>
 
     <script type="module">
-        import { PLAYER_SPRITE, drawSprite, spriteWidth, spriteHeight } from './js/sprites.js';
+        import { PLAYER_SPRITE, BULLET_SPRITE, drawSprite, spriteWidth, spriteHeight } from './js/sprites.js';
 
-        // ----- Browser-/Touch-Detection (für späteren Mobile-Support) -----
+        // ----- Browser-/Touch-Detection (für Mobile-Support) -----
         const isTouch = 'ontouchstart' in window || matchMedia('(pointer: coarse)').matches;
         window.__isTouch = isTouch;
+
+        // ----- Web Audio: AudioContext-Unlock (kritisch für iOS Safari) -----
+        let audioCtx = null;
+        function ensureAudio() {
+            if (!audioCtx) {
+                const Ctor = window.AudioContext || window.webkitAudioContext;
+                if (Ctor) audioCtx = new Ctor();
+            }
+            if (audioCtx && audioCtx.state === 'suspended') {
+                audioCtx.resume();
+            }
+        }
+        ['keydown', 'click', 'touchstart'].forEach(evt => {
+            window.addEventListener(evt, ensureAudio, { passive: true });
+        });
+
+        function playPew() {
+            if (!audioCtx) return;
+            const t0 = audioCtx.currentTime;
+            const dur = 0.08;
+            const osc = audioCtx.createOscillator();
+            const gain = audioCtx.createGain();
+            osc.type = 'square';
+            osc.frequency.setValueAtTime(800, t0);
+            osc.frequency.exponentialRampToValueAtTime(200, t0 + dur);
+            gain.gain.setValueAtTime(0.18, t0);
+            gain.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+            osc.connect(gain).connect(audioCtx.destination);
+            osc.start(t0);
+            osc.stop(t0 + dur);
+        }
 
         // ----- Canvas-Setup mit 4:3 Aspect Ratio, responsive -----
         const canvas = document.getElementById('game');
@@ -112,17 +143,48 @@
             player.x = Math.max(0, Math.min(player.x, canvas.width - playerW()));
         });
 
-        // ----- Tastatur-Steuerung (state-basiert für späteres Multi-Key) -----
+        // ----- Tastatur-Steuerung (state-basiert für Multi-Key) -----
         const keys = Object.create(null);
         document.addEventListener('keydown', (e) => {
             keys[e.key] = true;
+            if (e.code === 'Space' || e.key === ' ') keys['Space'] = true;
             if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', ' '].includes(e.key)) {
                 e.preventDefault();
             }
         });
         document.addEventListener('keyup', (e) => {
             keys[e.key] = false;
+            if (e.code === 'Space' || e.key === ' ') keys['Space'] = false;
         });
+
+        // ----- Geschosse -----
+        const bullets = [];
+        let lastShoot = 0;
+        const SHOOT_COOLDOWN_MS = 250;
+
+        function bulletScale()  { return 3; }
+        function bulletW()      { return spriteWidth(BULLET_SPRITE)  * bulletScale(); }
+        function bulletH()      { return spriteHeight(BULLET_SPRITE) * bulletScale(); }
+
+        function tryShoot() {
+            const now = Date.now();
+            if (now - lastShoot < SHOOT_COOLDOWN_MS) return;
+            lastShoot = now;
+            // Startposition: zentriert oberhalb des Spieler-Lauf-Pixels
+            const bx = player.x + playerW() / 2 - bulletW() / 2;
+            const by = player.y - bulletH();
+            bullets.push({ x: bx, y: by });
+            playPew();
+        }
+
+        // ----- Touch Auto-Fire (alle 500ms auf Touch-Geräten) -----
+        // Wir setzen keys['Space'] programmatisch; in Phase 7 wird das nur im
+        // PLAYING-State aktiv sein.
+        if (isTouch) {
+            setInterval(() => { keys['Space'] = true; }, 500);
+            // Direkt nach jedem Tick im Loop wieder zurücksetzen, damit der
+            // Cooldown im Loop selbst die Schussrate bestimmt.
+        }
 
         // ----- Touch-Steuerung: Drag auf dem Canvas -----
         let touchTargetX = null;
@@ -178,12 +240,28 @@
 
             // Bodenposition jeden Frame frisch (resize-sicher)
             player.y = canvas.height - playerH() - 30;
+
+            // Schießen (Tastatur + Touch-Auto-Fire setzen beide keys['Space'])
+            if (keys['Space'] && Date.now() - lastShoot > SHOOT_COOLDOWN_MS) {
+                tryShoot();
+                if (isTouch) keys['Space'] = false; // Auto-Fire-Tick verbraucht
+            }
+
+            // Geschosse bewegen: Querung von unten nach oben in ca. 1 Sekunde
+            const bulletSpeed = canvas.height / 1.0;
+            for (let i = bullets.length - 1; i >= 0; i--) {
+                bullets[i].y -= bulletSpeed * dt;
+                if (bullets[i].y + bulletH() < 0) bullets.splice(i, 1);
+            }
         }
 
         function render() {
             ctx.fillStyle = '#000';
             ctx.fillRect(0, 0, canvas.width, canvas.height);
             drawSprite(ctx, PLAYER_SPRITE, player.x, player.y, getSpriteScale(), '#ffffff');
+            for (const b of bullets) {
+                drawSprite(ctx, BULLET_SPRITE, b.x, b.y, bulletScale(), '#ffffff');
+            }
         }
 
         function loop(now) {
