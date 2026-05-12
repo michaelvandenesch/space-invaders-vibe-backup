@@ -44,12 +44,50 @@
             image-rendering: crisp-edges;
             touch-action: none;
         }
+        #hud {
+            display: flex;
+            justify-content: space-between;
+            width: 95%;
+            max-width: 800px;
+            color: #fff;
+            font-family: 'Courier New', Courier, monospace;
+            font-size: clamp(0.9rem, 2.2vw, 1.2rem);
+            letter-spacing: 0.15em;
+            visibility: hidden;
+        }
+        #hud.visible { visibility: visible; }
+        #stage {
+            position: relative;
+        }
+        #quit {
+            position: absolute;
+            top: 6px;
+            right: 6px;
+            background: rgba(0,0,0,0.6);
+            color: #fff;
+            border: 1px solid #fff;
+            font-family: 'Courier New', Courier, monospace;
+            font-size: 0.85rem;
+            letter-spacing: 0.15em;
+            padding: 4px 10px;
+            cursor: pointer;
+            display: none;
+            touch-action: manipulation;
+        }
+        #quit.visible { display: block; }
     </style>
 </head>
 <body>
     <div id="app">
         <h1 id="title">SPACE INVADERS</h1>
-        <canvas id="game"></canvas>
+        <div id="stage">
+            <canvas id="game"></canvas>
+            <button id="quit" type="button">QUIT</button>
+        </div>
+        <div id="hud">
+            <span id="score">SCORE: 0000</span>
+            <span id="wave">WAVE 1</span>
+        </div>
     </div>
 
     <script type="module">
@@ -111,6 +149,42 @@
             osc.start(t0);
             osc.stop(t0 + dur);
             marchStep++;
+        }
+
+        // ----- Treffer-Sound: kurzer Noise-Burst 50ms -----
+        function playHit() {
+            if (!audioCtx) return;
+            const dur = 0.05;
+            const sr = audioCtx.sampleRate;
+            const len = Math.max(1, Math.floor(sr * dur));
+            const buf = audioCtx.createBuffer(1, len, sr);
+            const data = buf.getChannelData(0);
+            for (let i = 0; i < len; i++) {
+                data[i] = (Math.random() * 2 - 1) * (1 - i / len);
+            }
+            const src = audioCtx.createBufferSource();
+            src.buffer = buf;
+            const gain = audioCtx.createGain();
+            gain.gain.value = 0.25;
+            src.connect(gain).connect(audioCtx.destination);
+            src.start();
+        }
+
+        // ----- Game-Over-Sound: square 400 -> 50 Hz über 1 Sek -----
+        function playGameOver() {
+            if (!audioCtx) return;
+            const t0 = audioCtx.currentTime;
+            const dur = 1.0;
+            const osc = audioCtx.createOscillator();
+            const gain = audioCtx.createGain();
+            osc.type = 'square';
+            osc.frequency.setValueAtTime(400, t0);
+            osc.frequency.exponentialRampToValueAtTime(50, t0 + dur);
+            gain.gain.setValueAtTime(0.2, t0);
+            gain.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+            osc.connect(gain).connect(audioCtx.destination);
+            osc.start(t0);
+            osc.stop(t0 + dur);
         }
 
         // ----- Canvas-Setup mit 4:3 Aspect Ratio, responsive -----
@@ -201,13 +275,63 @@
             playPew();
         }
 
-        // ----- Touch Auto-Fire (alle 500ms auf Touch-Geräten) -----
-        // Wir setzen keys['Space'] programmatisch; in Phase 7 wird das nur im
-        // PLAYING-State aktiv sein.
+        // ----- Touch Auto-Fire (alle 500ms auf Touch-Geräten, nur PLAYING) -----
         if (isTouch) {
-            setInterval(() => { keys['Space'] = true; }, 500);
-            // Direkt nach jedem Tick im Loop wieder zurücksetzen, damit der
-            // Cooldown im Loop selbst die Schussrate bestimmt.
+            setInterval(() => { if (gameState === 'PLAYING') keys['Space'] = true; }, 500);
+        }
+
+        // ----- Game-State -----
+        const STATE = { START: 'START', PLAYING: 'PLAYING', GAME_OVER: 'GAME_OVER' };
+        let gameState = STATE.START;
+        let score = 0;
+        let wave = 1;
+        let speedMultiplier = 1;
+
+        const hudEl   = document.getElementById('hud');
+        const scoreEl = document.getElementById('score');
+        const waveEl  = document.getElementById('wave');
+        const quitBtn = document.getElementById('quit');
+
+        function updateHud() {
+            scoreEl.textContent = 'SCORE: ' + String(score).padStart(4, '0');
+            waveEl.textContent  = 'WAVE ' + wave;
+            const showHud = gameState === STATE.PLAYING || gameState === STATE.GAME_OVER;
+            hudEl.classList.toggle('visible', showHud);
+            const showQuit = isTouch && gameState === STATE.PLAYING;
+            quitBtn.classList.toggle('visible', showQuit);
+        }
+
+        function startGame() {
+            score = 0;
+            wave = 1;
+            speedMultiplier = 1;
+            bullets.length = 0;
+            buildAliens();
+            placePlayerInitial();
+            lastAlienTick = performance.now();
+            gameState = STATE.PLAYING;
+            updateHud();
+        }
+
+        function nextWave() {
+            wave += 1;
+            speedMultiplier *= 1.5;
+            buildAliens();
+            bullets.length = 0;
+            lastAlienTick = performance.now();
+            updateHud();
+        }
+
+        function gameOver() {
+            gameState = STATE.GAME_OVER;
+            playGameOver();
+            updateHud();
+        }
+
+        function quitToStart() {
+            gameState = STATE.START;
+            keys['Space'] = false;
+            updateHud();
         }
 
         // ----- Alien-Formation -----
@@ -276,7 +400,8 @@
         function stepAliens(now) {
             const n = aliveCount();
             if (n === 0) return;
-            if (now - lastAlienTick < alienTickInterval(n)) return;
+            const interval = alienTickInterval(n) / speedMultiplier;
+            if (now - lastAlienTick < interval) return;
             lastAlienTick = now;
 
             const bb = alienBlockBounds();
@@ -289,7 +414,6 @@
             const nextRight = blockRight + alienBlock.dir * stepX;
 
             if (nextLeft < 0 || nextRight > canvas.width) {
-                // Richtung umkehren + ein Schritt nach unten
                 alienBlock.dir *= -1;
                 alienBlock.y += alienStepY();
             } else {
@@ -327,6 +451,9 @@
         function handleTouch(e) {
             if (e.touches.length === 0) return;
             e.preventDefault();
+            // Tap-to-Start / Tap-to-Restart
+            if (gameState === STATE.START) { startGame(); return; }
+            if (gameState === STATE.GAME_OVER) { quitToStart(); return; }
             touchTargetX = canvasXFromClient(e.touches[0].clientX);
         }
         function handleTouchEnd(e) {
@@ -337,10 +464,52 @@
         canvas.addEventListener('touchend', handleTouchEnd, { passive: false });
         canvas.addEventListener('touchcancel', handleTouchEnd, { passive: false });
 
+        // Desktop-Maus-Klick auf Canvas: Start/Restart
+        canvas.addEventListener('click', () => {
+            if (gameState === STATE.START) startGame();
+            else if (gameState === STATE.GAME_OVER) quitToStart();
+        });
+
+        // Quit-Button (Touch + Desktop) und ESC-Taste
+        quitBtn.addEventListener('click', (e) => { e.stopPropagation(); quitToStart(); });
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') {
+                if (gameState === STATE.PLAYING || gameState === STATE.GAME_OVER) quitToStart();
+            }
+            // Space im START/GAME_OVER startet/restartet
+            if ((e.code === 'Space' || e.key === ' ')) {
+                if (gameState === STATE.START) startGame();
+                else if (gameState === STATE.GAME_OVER) quitToStart();
+            }
+        });
+
+        updateHud();
+
         // ----- Game-Loop -----
         let lastTime = performance.now();
 
+        function aabb(ax, ay, aw, ah, bx, by, bw, bh) {
+            return ax < bx + bw && ax + aw > bx && ay < by + bh && ay + ah > by;
+        }
+
+        function alienRectAt(a) {
+            const cellW = alienCellW();
+            const cellH = alienCellH();
+            const sw = spriteWidth(TUX_SPRITE)  * getSpriteScale();
+            const sh = spriteHeight(TUX_SPRITE) * getSpriteScale();
+            const padX = (cellW - sw) / 2;
+            const padY = (cellH - sh) / 2;
+            return {
+                x: alienBlock.x + a.col * cellW + padX,
+                y: alienBlock.y + a.row * cellH + padY,
+                w: sw,
+                h: sh
+            };
+        }
+
         function update(dt) {
+            if (gameState !== STATE.PLAYING) return;
+
             // Querung links<->rechts in 2.5 Sekunden, an Canvas-Breite normalisiert
             const speedPxPerSec = canvas.width / 2.5;
 
@@ -370,30 +539,105 @@
             // Bodenposition jeden Frame frisch (resize-sicher)
             player.y = canvas.height - playerH() - 30;
 
-            // Schießen (Tastatur + Touch-Auto-Fire setzen beide keys['Space'])
+            // Schießen
             if (keys['Space'] && Date.now() - lastShoot > SHOOT_COOLDOWN_MS) {
                 tryShoot();
-                if (isTouch) keys['Space'] = false; // Auto-Fire-Tick verbraucht
+                if (isTouch) keys['Space'] = false;
             }
 
-            // Geschosse bewegen: Querung von unten nach oben in ca. 1 Sekunde
+            // Geschosse bewegen + Kollision mit Aliens
             const bulletSpeed = canvas.height / 1.0;
             for (let i = bullets.length - 1; i >= 0; i--) {
-                bullets[i].y -= bulletSpeed * dt;
-                if (bullets[i].y + bulletH() < 0) bullets.splice(i, 1);
+                const b = bullets[i];
+                b.y -= bulletSpeed * dt;
+                if (b.y + bulletH() < 0) { bullets.splice(i, 1); continue; }
+                // Kollision
+                let hit = false;
+                for (const a of aliens) {
+                    if (!a.alive) continue;
+                    const r = alienRectAt(a);
+                    if (aabb(b.x, b.y, bulletW(), bulletH(), r.x, r.y, r.w, r.h)) {
+                        a.alive = false;
+                        score += ROW_DEFS[a.type].points;
+                        playHit();
+                        hit = true;
+                        break;
+                    }
+                }
+                if (hit) bullets.splice(i, 1);
             }
 
-            // Alien-Block-Bewegung (zeitgesteuert + Marsch-Sound)
+            // Alien-Block-Bewegung (zeitgesteuert + Marsch-Sound, mit Wellen-Speed)
             stepAliens(performance.now());
+
+            // Game-Over: Aliens erreichen Spieler-Y
+            const bb = alienBlockBounds();
+            if (bb.maxRow >= 0) {
+                const cellH = alienCellH();
+                const sh = spriteHeight(TUX_SPRITE) * getSpriteScale();
+                const padY = (cellH - sh) / 2;
+                const lowestY = alienBlock.y + (bb.maxRow + 1) * cellH - padY;
+                if (lowestY >= player.y) { gameOver(); return; }
+            }
+
+            // Welle abgeschlossen?
+            if (aliveCount() === 0) {
+                nextWave();
+            }
+
+            updateHud();
         }
 
         function render() {
             ctx.fillStyle = '#000';
             ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            if (gameState === STATE.START) {
+                drawStartScreen();
+                return;
+            }
+
             drawAliens();
             drawSprite(ctx, PLAYER_SPRITE, player.x, player.y, getSpriteScale(), '#ffffff');
             for (const b of bullets) {
                 drawSprite(ctx, BULLET_SPRITE, b.x, b.y, bulletScale(), '#ffffff');
+            }
+
+            if (gameState === STATE.GAME_OVER) {
+                drawGameOverScreen();
+            }
+        }
+
+        function drawCenteredText(text, yFrac, sizePx, color = '#ffffff') {
+            ctx.fillStyle = color;
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.font = 'bold ' + sizePx + 'px "Courier New", monospace';
+            ctx.fillText(text, canvas.width / 2, canvas.height * yFrac);
+        }
+
+        function drawStartScreen() {
+            const big   = Math.max(28, canvas.width * 0.07);
+            const small = Math.max(14, canvas.width * 0.03);
+            drawCenteredText('SPACE INVADERS', 0.4, big);
+            const blink = Math.floor(performance.now() / 500) % 2 === 0;
+            if (blink) {
+                drawCenteredText(isTouch ? 'TAP TO START' : 'PRESS SPACE TO START', 0.6, small);
+            }
+        }
+
+        function drawGameOverScreen() {
+            ctx.fillStyle = 'rgba(0,0,0,0.65)';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            const big   = Math.max(28, canvas.width * 0.07);
+            const med   = Math.max(18, canvas.width * 0.035);
+            const small = Math.max(14, canvas.width * 0.03);
+            drawCenteredText('GAME OVER', 0.35, big);
+            drawCenteredText('FINAL SCORE: ' + String(score).padStart(4, '0'), 0.5, med);
+            drawCenteredText('REACHED WAVE ' + wave, 0.58, med);
+            const blink = Math.floor(performance.now() / 500) % 2 === 0;
+            if (blink) {
+                drawCenteredText(isTouch ? 'TAP TO RESTART' : 'PRESS SPACE TO RESTART', 0.72, small);
             }
         }
 
