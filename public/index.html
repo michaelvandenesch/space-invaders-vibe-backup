@@ -59,6 +59,55 @@
         #stage {
             position: relative;
         }
+        #namePanel {
+            position: absolute;
+            left: 50%;
+            top: 68%;
+            transform: translate(-50%, -50%);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 6px;
+            color: #fff;
+            font-family: 'Courier New', Courier, monospace;
+            text-align: center;
+            pointer-events: auto;
+        }
+        #namePanel.hidden { display: none; }
+        #nameInput {
+            background: #000;
+            color: #fff;
+            border: 1px solid #fff;
+            font-family: 'Courier New', Courier, monospace;
+            font-size: 1rem;
+            letter-spacing: 0.15em;
+            padding: 4px 8px;
+            text-align: center;
+            text-transform: uppercase;
+            width: 12ch;
+            outline: none;
+        }
+        #nameHint {
+            font-size: 0.7rem;
+            opacity: 0.75;
+            letter-spacing: 0.05em;
+        }
+        #resetHi {
+            position: absolute;
+            left: 50%;
+            bottom: 8px;
+            transform: translateX(-50%);
+            color: #fff;
+            font-family: 'Courier New', Courier, monospace;
+            font-size: 0.75rem;
+            opacity: 0.7;
+            background: none;
+            border: none;
+            cursor: pointer;
+            text-decoration: underline;
+            padding: 4px 8px;
+        }
+        #resetHi.hidden { display: none; }
         #quit {
             position: absolute;
             top: 6px;
@@ -83,6 +132,11 @@
         <div id="stage">
             <canvas id="game"></canvas>
             <button id="quit" type="button">QUIT</button>
+            <div id="namePanel">
+                <input id="nameInput" type="text" maxlength="12" autocomplete="off" spellcheck="false" placeholder="DEIN NAME">
+                <div id="nameHint">Dein Spielername wird lokal in deinem Browser gespeichert</div>
+            </div>
+            <button id="resetHi" type="button">Reset Highscore</button>
         </div>
         <div id="hud">
             <span id="score">SCORE: 0000</span>
@@ -317,6 +371,52 @@
         let score = 0;
         let wave = 1;
         let speedMultiplier = 1;
+        let isNewHighScore = false;
+
+        // ----- localStorage Helpers -----
+        const LS_NAME       = 'playerName';
+        const LS_HIGHSCORE  = 'highScore';
+        const LS_HIGHWAVE   = 'highScoreWave';
+        function lsGet(k, def = null) {
+            try { const v = localStorage.getItem(k); return v === null ? def : v; }
+            catch { return def; }
+        }
+        function lsSet(k, v) { try { localStorage.setItem(k, v); } catch { /* ignore */ } }
+        function lsDel(k)    { try { localStorage.removeItem(k); }      catch { /* ignore */ } }
+
+        function getHighScore() { const v = parseInt(lsGet(LS_HIGHSCORE, '0'), 10); return isNaN(v) ? 0 : v; }
+        function getHighWave()  { const v = parseInt(lsGet(LS_HIGHWAVE,  '1'), 10); return isNaN(v) ? 1 : v; }
+        function getPlayerName() { return (lsGet(LS_NAME, '') || '').toUpperCase(); }
+
+        // ----- Name-Input -----
+        const namePanel = document.getElementById('namePanel');
+        const nameInput = document.getElementById('nameInput');
+        const resetHiBtn = document.getElementById('resetHi');
+        const NAME_RE = /[^A-Za-z0-9 \-]/g;
+
+        function sanitizeName(v) {
+            return (v || '').replace(NAME_RE, '').slice(0, 12).toUpperCase();
+        }
+        nameInput.value = getPlayerName();
+        nameInput.addEventListener('focus', () => nameInput.select());
+        nameInput.addEventListener('input', () => {
+            const clean = sanitizeName(nameInput.value);
+            if (nameInput.value !== clean) nameInput.value = clean;
+            lsSet(LS_NAME, clean);
+        });
+        nameInput.addEventListener('keydown', (e) => {
+            // Eingaben sollen NICHT das Spiel starten / steuern
+            e.stopPropagation();
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                nameInput.blur();
+            }
+        });
+        resetHiBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            lsDel(LS_HIGHSCORE);
+            lsDel(LS_HIGHWAVE);
+        });
 
         const hudEl   = document.getElementById('hud');
         const scoreEl = document.getElementById('score');
@@ -330,12 +430,19 @@
             hudEl.classList.toggle('visible', showHud);
             const showQuit = isTouch && gameState === STATE.PLAYING;
             quitBtn.classList.toggle('visible', showQuit);
+            // Name-Input + Reset nur im START-Screen sichtbar
+            const showStart = gameState === STATE.START;
+            namePanel.classList.toggle('hidden', !showStart);
+            resetHiBtn.classList.toggle('hidden', !showStart);
         }
 
         function startGame() {
+            // Falls Name-Input fokussiert ist: nicht starten
+            if (document.activeElement === nameInput) return;
             score = 0;
             wave = 1;
             speedMultiplier = 1;
+            isNewHighScore = false;
             bullets.length = 0;
             alienBullets.length = 0;
             buildAliens();
@@ -361,6 +468,15 @@
 
         function gameOver() {
             gameState = STATE.GAME_OVER;
+            // Highscore prüfen
+            const prev = getHighScore();
+            if (score > prev) {
+                lsSet(LS_HIGHSCORE, String(score));
+                lsSet(LS_HIGHWAVE,  String(wave));
+                isNewHighScore = true;
+            } else {
+                isNewHighScore = false;
+            }
             playGameOver();
             updateHud();
         }
@@ -583,7 +699,11 @@
 
         function handleTouch(e) {
             if (e.touches.length === 0) return;
+            // Touch im Name-Input nicht abfangen
+            if (e.target === nameInput) return;
             e.preventDefault();
+            // Name-Input ggf. schliessen
+            if (document.activeElement === nameInput) nameInput.blur();
             // Tap-to-Start / Tap-to-Restart
             if (gameState === STATE.START) { startGame(); return; }
             if (gameState === STATE.GAME_OVER) { quitToStart(); return; }
@@ -599,6 +719,7 @@
 
         // Desktop-Maus-Klick auf Canvas: Start/Restart
         canvas.addEventListener('click', () => {
+            if (document.activeElement === nameInput) { nameInput.blur(); return; }
             if (gameState === STATE.START) startGame();
             else if (gameState === STATE.GAME_OVER) quitToStart();
         });
@@ -606,6 +727,8 @@
         // Quit-Button (Touch + Desktop) und ESC-Taste
         quitBtn.addEventListener('click', (e) => { e.stopPropagation(); quitToStart(); });
         document.addEventListener('keydown', (e) => {
+            // Ignorieren während Eingabe in Name-Feld
+            if (document.activeElement === nameInput) return;
             if (e.key === 'Escape') {
                 if (gameState === STATE.PLAYING || gameState === STATE.GAME_OVER) quitToStart();
             }
@@ -782,10 +905,16 @@
         function drawStartScreen() {
             const big   = Math.max(28, canvas.width * 0.07);
             const small = Math.max(14, canvas.width * 0.03);
-            drawCenteredText('SPACE INVADERS', 0.4, big);
+            const tiny  = Math.max(12, canvas.width * 0.025);
+            drawCenteredText('SPACE INVADERS', 0.22, big);
             const blink = Math.floor(performance.now() / 500) % 2 === 0;
             if (blink) {
-                drawCenteredText(isTouch ? 'TAP TO START' : 'PRESS SPACE TO START', 0.6, small);
+                drawCenteredText(isTouch ? 'TAP TO START' : 'PRESS SPACE TO START', 0.45, small);
+            }
+            // Highscore-Anzeige unten (über dem Reset-Link)
+            const hi = getHighScore();
+            if (hi > 0) {
+                drawCenteredText('DEIN BESTER: ' + hi + ' (Welle ' + getHighWave() + ')', 0.88, tiny);
             }
         }
 
@@ -795,12 +924,21 @@
             const big   = Math.max(28, canvas.width * 0.07);
             const med   = Math.max(18, canvas.width * 0.035);
             const small = Math.max(14, canvas.width * 0.03);
-            drawCenteredText('GAME OVER', 0.35, big);
-            drawCenteredText('FINAL SCORE: ' + String(score).padStart(4, '0'), 0.5, med);
-            drawCenteredText('REACHED WAVE ' + wave, 0.58, med);
+            const name = getPlayerName() || 'PLAYER';
+            drawCenteredText('GAME OVER', 0.22, big);
+            drawCenteredText(name, 0.34, med);
+            drawCenteredText('FINAL SCORE: ' + String(score).padStart(4, '0'), 0.45, med);
+            drawCenteredText('REACHED WAVE ' + wave, 0.53, med);
+            const hi = getHighScore();
+            if (hi > 0) {
+                drawCenteredText('DEIN BESTER SCORE: ' + hi + ' (Welle ' + getHighWave() + ')', 0.62, small);
+            }
             const blink = Math.floor(performance.now() / 500) % 2 === 0;
+            if (isNewHighScore && blink) {
+                drawCenteredText('NEW PERSONAL BEST!', 0.72, med, '#FFB900');
+            }
             if (blink) {
-                drawCenteredText(isTouch ? 'TAP TO RESTART' : 'PRESS SPACE TO RESTART', 0.72, small);
+                drawCenteredText(isTouch ? 'TAP TO RESTART' : 'PRESS SPACE TO RESTART', 0.84, small);
             }
         }
 
