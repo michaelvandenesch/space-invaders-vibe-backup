@@ -14,20 +14,186 @@
             color: #fff;
             font-family: 'Courier New', Courier, monospace;
             overflow: hidden;
+            -webkit-user-select: none;
+            user-select: none;
+            touch-action: none;
         }
-        body {
+        #app {
+            width: 100%;
+            height: 100%;
             display: flex;
+            flex-direction: column;
             align-items: center;
             justify-content: center;
+            gap: 1.5vh;
         }
-        #loading {
-            font-size: 1.5rem;
-            letter-spacing: 0.2em;
+        #title {
+            color: #fff;
+            font-family: 'Courier New', Courier, monospace;
+            font-weight: bold;
+            font-size: clamp(1.4rem, 4vw, 2.5rem);
+            letter-spacing: 0.3em;
             text-align: center;
+            margin: 0;
+        }
+        #game {
+            display: block;
+            background: #000;
+            border: 1px solid #fff;
+            image-rendering: pixelated;
+            image-rendering: crisp-edges;
+            touch-action: none;
         }
     </style>
 </head>
 <body>
-    <div id="loading">SPACE INVADERS - LOADING</div>
+    <div id="app">
+        <h1 id="title">SPACE INVADERS</h1>
+        <canvas id="game"></canvas>
+    </div>
+
+    <script type="module">
+        import { PLAYER_SPRITE, drawSprite, spriteWidth, spriteHeight } from './js/sprites.js';
+
+        // ----- Browser-/Touch-Detection (für späteren Mobile-Support) -----
+        const isTouch = 'ontouchstart' in window || matchMedia('(pointer: coarse)').matches;
+        window.__isTouch = isTouch;
+
+        // ----- Canvas-Setup mit 4:3 Aspect Ratio, responsive -----
+        const canvas = document.getElementById('game');
+        const ctx = canvas.getContext('2d');
+        ctx.imageSmoothingEnabled = false;
+
+        const ASPECT_W = 4;
+        const ASPECT_H = 3;
+        const MAX_WIDTH = 800;
+
+        function resizeCanvas() {
+            const titleEl = document.getElementById('title');
+            const titleH = titleEl.getBoundingClientRect().height;
+            const gap = window.innerHeight * 0.015 * 2; // 2x 1.5vh
+            const availW = window.innerWidth * 0.95;
+            const availH = window.innerHeight - titleH - gap - 16;
+
+            let w = Math.min(MAX_WIDTH, availW);
+            let h = w * ASPECT_H / ASPECT_W;
+            if (h > availH) {
+                h = availH;
+                w = h * ASPECT_W / ASPECT_H;
+            }
+            canvas.width = Math.floor(w);
+            canvas.height = Math.floor(h);
+            ctx.imageSmoothingEnabled = false;
+        }
+        window.addEventListener('resize', resizeCanvas);
+        window.addEventListener('orientationchange', resizeCanvas);
+        resizeCanvas();
+
+        // ----- Sprite-Skalierung (responsive) -----
+        function getSpriteScale(baseFactor = 1) {
+            const factor = canvas.width >= 600 ? 3 : 2;
+            return factor * baseFactor;
+        }
+
+        // ----- Spieler -----
+        const player = { x: 0, y: 0 };
+
+        function playerW() { return spriteWidth(PLAYER_SPRITE) * getSpriteScale(); }
+        function playerH() { return spriteHeight(PLAYER_SPRITE) * getSpriteScale(); }
+
+        function placePlayerInitial() {
+            player.x = (canvas.width - playerW()) / 2;
+            player.y = canvas.height - playerH() - 30;
+        }
+        placePlayerInitial();
+
+        window.addEventListener('resize', () => {
+            player.y = canvas.height - playerH() - 30;
+            player.x = Math.max(0, Math.min(player.x, canvas.width - playerW()));
+        });
+
+        // ----- Tastatur-Steuerung (state-basiert für späteres Multi-Key) -----
+        const keys = Object.create(null);
+        document.addEventListener('keydown', (e) => {
+            keys[e.key] = true;
+            if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', ' '].includes(e.key)) {
+                e.preventDefault();
+            }
+        });
+        document.addEventListener('keyup', (e) => {
+            keys[e.key] = false;
+        });
+
+        // ----- Touch-Steuerung: Drag auf dem Canvas -----
+        let touchTargetX = null;
+
+        function canvasXFromClient(clientX) {
+            const rect = canvas.getBoundingClientRect();
+            const scale = canvas.width / rect.width;
+            return (clientX - rect.left) * scale;
+        }
+
+        function handleTouch(e) {
+            if (e.touches.length === 0) return;
+            e.preventDefault();
+            touchTargetX = canvasXFromClient(e.touches[0].clientX);
+        }
+        function handleTouchEnd(e) {
+            if (e.touches.length === 0) touchTargetX = null;
+        }
+        canvas.addEventListener('touchstart', handleTouch, { passive: false });
+        canvas.addEventListener('touchmove', handleTouch, { passive: false });
+        canvas.addEventListener('touchend', handleTouchEnd, { passive: false });
+        canvas.addEventListener('touchcancel', handleTouchEnd, { passive: false });
+
+        // ----- Game-Loop -----
+        let lastTime = performance.now();
+
+        function update(dt) {
+            // Querung links<->rechts in 2.5 Sekunden, an Canvas-Breite normalisiert
+            const speedPxPerSec = canvas.width / 2.5;
+
+            // Tastatur
+            let dx = 0;
+            if (keys['ArrowLeft']  || keys['a'] || keys['A']) dx -= 1;
+            if (keys['ArrowRight'] || keys['d'] || keys['D']) dx += 1;
+            player.x += dx * speedPxPerSec * dt;
+
+            // Touch: Schiff folgt Finger horizontal, gleiche Max-Speed -> nicht ruckelig
+            if (touchTargetX !== null) {
+                const targetX = touchTargetX - playerW() / 2;
+                const diff = targetX - player.x;
+                const maxStep = speedPxPerSec * dt;
+                if (Math.abs(diff) <= maxStep) {
+                    player.x = targetX;
+                } else {
+                    player.x += Math.sign(diff) * maxStep;
+                }
+            }
+
+            // Clamp
+            const maxX = canvas.width - playerW();
+            if (player.x < 0) player.x = 0;
+            if (player.x > maxX) player.x = maxX;
+
+            // Bodenposition jeden Frame frisch (resize-sicher)
+            player.y = canvas.height - playerH() - 30;
+        }
+
+        function render() {
+            ctx.fillStyle = '#000';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            drawSprite(ctx, PLAYER_SPRITE, player.x, player.y, getSpriteScale(), '#ffffff');
+        }
+
+        function loop(now) {
+            const dt = Math.min(0.05, (now - lastTime) / 1000);
+            lastTime = now;
+            update(dt);
+            render();
+            requestAnimationFrame(loop);
+        }
+        requestAnimationFrame((t) => { lastTime = t; loop(t); });
+    </script>
 </body>
 </html>
