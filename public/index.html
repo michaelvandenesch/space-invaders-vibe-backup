@@ -53,7 +53,11 @@
     </div>
 
     <script type="module">
-        import { PLAYER_SPRITE, BULLET_SPRITE, drawSprite, spriteWidth, spriteHeight } from './js/sprites.js';
+        import {
+            PLAYER_SPRITE, BULLET_SPRITE,
+            TUX_SPRITE, WINDOWS_SPRITE, CREEPER_SPRITE,
+            drawSprite, spriteWidth, spriteHeight
+        } from './js/sprites.js';
 
         // ----- Browser-/Touch-Detection (für Mobile-Support) -----
         const isTouch = 'ontouchstart' in window || matchMedia('(pointer: coarse)').matches;
@@ -88,6 +92,25 @@
             osc.connect(gain).connect(audioCtx.destination);
             osc.start(t0);
             osc.stop(t0 + dur);
+        }
+
+        // ----- Marsch-Sound: 4 Bass-Töne, 100ms square -----
+        const MARCH_FREQS = [100, 90, 80, 70];
+        let marchStep = 0;
+        function playMarchTick() {
+            if (!audioCtx) return;
+            const t0 = audioCtx.currentTime;
+            const dur = 0.1;
+            const osc = audioCtx.createOscillator();
+            const gain = audioCtx.createGain();
+            osc.type = 'square';
+            osc.frequency.setValueAtTime(MARCH_FREQS[marchStep % MARCH_FREQS.length], t0);
+            gain.gain.setValueAtTime(0.12, t0);
+            gain.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+            osc.connect(gain).connect(audioCtx.destination);
+            osc.start(t0);
+            osc.stop(t0 + dur);
+            marchStep++;
         }
 
         // ----- Canvas-Setup mit 4:3 Aspect Ratio, responsive -----
@@ -141,6 +164,7 @@
         window.addEventListener('resize', () => {
             player.y = canvas.height - playerH() - 30;
             player.x = Math.max(0, Math.min(player.x, canvas.width - playerW()));
+            buildAliens();
         });
 
         // ----- Tastatur-Steuerung (state-basiert für Multi-Key) -----
@@ -184,6 +208,111 @@
             setInterval(() => { keys['Space'] = true; }, 500);
             // Direkt nach jedem Tick im Loop wieder zurücksetzen, damit der
             // Cooldown im Loop selbst die Schussrate bestimmt.
+        }
+
+        // ----- Alien-Formation -----
+        const ALIEN_COLS = 11;
+        const ALIEN_ROWS = 4;
+        const ALIEN_TOTAL = ALIEN_COLS * ALIEN_ROWS;
+
+        // Reihen-Definition (von oben nach unten)
+        const ROW_DEFS = [
+            { sprite: TUX_SPRITE,     points: 30, color: '#ffffff' }, // Reihe 1
+            { sprite: WINDOWS_SPRITE, points: 20, color: '#ffffff' }, // Reihe 2
+            { sprite: WINDOWS_SPRITE, points: 20, color: '#ffffff' }, // Reihe 3
+            { sprite: CREEPER_SPRITE, points: 10, color: '#ffffff' }  // Reihe 4
+        ];
+
+        // Block-Offset (oben-links der Formation) plus Bewegungsrichtung
+        const alienBlock = { x: 0, y: 0, dir: 1 };
+        const aliens = []; // {row, col, alive, type}
+
+        // Zellen-Größen (aus skaliertem Sprite + Spacing) für aktuelle Canvas-Größe
+        function alienCellW() { return spriteWidth(TUX_SPRITE)  * getSpriteScale() + Math.max(6, getSpriteScale() * 2); }
+        function alienCellH() { return spriteHeight(TUX_SPRITE) * getSpriteScale() + Math.max(4, getSpriteScale() * 2); }
+        function alienStepX() { return Math.max(2, getSpriteScale() * 2); } // horizontaler Schritt
+        function alienStepY() { return canvas.height * 0.045; }              // vertikaler Schritt ~4.5%
+
+        function buildAliens() {
+            aliens.length = 0;
+            for (let r = 0; r < ALIEN_ROWS; r++) {
+                for (let c = 0; c < ALIEN_COLS; c++) {
+                    aliens.push({ row: r, col: c, alive: true, type: r });
+                }
+            }
+            // Top-Padding: Desktop ~13%, Mobile ~8%
+            const topPct = canvas.width >= 600 ? 0.13 : 0.08;
+            alienBlock.x = (canvas.width - ALIEN_COLS * alienCellW()) / 2;
+            alienBlock.y = canvas.height * topPct;
+            alienBlock.dir = 1;
+        }
+        buildAliens();
+
+        function aliveCount() {
+            let n = 0;
+            for (const a of aliens) if (a.alive) n++;
+            return n;
+        }
+
+        function alienTickInterval(n) {
+            if (n <= 1) return 150;
+            return 150 + (900 - 150) * (n - 1) / (ALIEN_TOTAL - 1);
+        }
+
+        // Bounding-Box des lebenden Blocks
+        function alienBlockBounds() {
+            let minCol = ALIEN_COLS, maxCol = -1, maxRow = -1;
+            for (const a of aliens) {
+                if (!a.alive) continue;
+                if (a.col < minCol) minCol = a.col;
+                if (a.col > maxCol) maxCol = a.col;
+                if (a.row > maxRow) maxRow = a.row;
+            }
+            return { minCol, maxCol, maxRow };
+        }
+
+        let lastAlienTick = performance.now();
+
+        function stepAliens(now) {
+            const n = aliveCount();
+            if (n === 0) return;
+            if (now - lastAlienTick < alienTickInterval(n)) return;
+            lastAlienTick = now;
+
+            const bb = alienBlockBounds();
+            const stepX = alienStepX();
+            const cellW = alienCellW();
+            const blockLeft  = alienBlock.x + bb.minCol * cellW;
+            const blockRight = alienBlock.x + (bb.maxCol + 1) * cellW;
+
+            const nextLeft  = blockLeft  + alienBlock.dir * stepX;
+            const nextRight = blockRight + alienBlock.dir * stepX;
+
+            if (nextLeft < 0 || nextRight > canvas.width) {
+                // Richtung umkehren + ein Schritt nach unten
+                alienBlock.dir *= -1;
+                alienBlock.y += alienStepY();
+            } else {
+                alienBlock.x += alienBlock.dir * stepX;
+            }
+
+            playMarchTick();
+        }
+
+        function drawAliens() {
+            const cellW = alienCellW();
+            const cellH = alienCellH();
+            const sw = spriteWidth(TUX_SPRITE)  * getSpriteScale();
+            const sh = spriteHeight(TUX_SPRITE) * getSpriteScale();
+            const padX = (cellW - sw) / 2;
+            const padY = (cellH - sh) / 2;
+            for (const a of aliens) {
+                if (!a.alive) continue;
+                const def = ROW_DEFS[a.type];
+                const x = alienBlock.x + a.col * cellW + padX;
+                const y = alienBlock.y + a.row * cellH + padY;
+                drawSprite(ctx, def.sprite, x, y, getSpriteScale(), def.color);
+            }
         }
 
         // ----- Touch-Steuerung: Drag auf dem Canvas -----
@@ -253,11 +382,15 @@
                 bullets[i].y -= bulletSpeed * dt;
                 if (bullets[i].y + bulletH() < 0) bullets.splice(i, 1);
             }
+
+            // Alien-Block-Bewegung (zeitgesteuert + Marsch-Sound)
+            stepAliens(performance.now());
         }
 
         function render() {
             ctx.fillStyle = '#000';
             ctx.fillRect(0, 0, canvas.width, canvas.height);
+            drawAliens();
             drawSprite(ctx, PLAYER_SPRITE, player.x, player.y, getSpriteScale(), '#ffffff');
             for (const b of bullets) {
                 drawSprite(ctx, BULLET_SPRITE, b.x, b.y, bulletScale(), '#ffffff');
